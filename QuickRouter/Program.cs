@@ -16,9 +16,11 @@ namespace QuickRouter
             API = new QuickMan();
             var routes = new Dictionary<string, string>();
 
-            routes.Add("*", "api.ipify.org");
-            routes.Add("*.example.com", "google.com");
-            routes.Add("test.example.com", "127.0.0.1:8089");
+            routes.Add("trade.styp.to", "127.0.0.1:7474");
+            routes.Add("xyx.styp.to", "127.0.0.1:8080");
+            routes.Add("eternal.styp.to", "127.0.0.1:8080");
+            routes.Add("*.styp.to", "127.0.0.1:808");
+            routes.Add("*", "127.0.0.1:808");
 
 
             API.Start(80, routes, 66666);
