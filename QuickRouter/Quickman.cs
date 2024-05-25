@@ -1,15 +1,8 @@
-﻿using RestSharp;
-using System;
-using System.Collections;
-using System.Collections.Concurrent;
+﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
-using System.Reflection;
-using System.Runtime.Remoting.Contexts;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,67 +13,24 @@ namespace StyptoSlaveBot
         #region Server
         #region Server Init
         public Thread ServerThread;
-        private HttpListener Listener;
+        private TcpListener Listener;
         private IPAddress _Address;
         private int _Port = 1999;
         private Dictionary<string, string> _Routes;
-
         private static int _MaxSimultaneousConnections = 20;
         private Semaphore sem = new Semaphore(_MaxSimultaneousConnections, _MaxSimultaneousConnections);
 
-        /// <summary>
-        /// Starts server then returns server's address.
-        /// </summary>
-        /// <param name="Address">IP Address</param>
-        /// <param name="Port">Port</param>
-        /// <param name="Routes">Routes dictionary</param>
-        /// <returns></returns>
         public string Start(IPAddress Address, int Port, Dictionary<string, string> Routes, int MaxSimultaneousConnections = 20)
         {
             _Port = Port;
             _Address = Address;
-            _Routes = Routes.OrderBy(r => r.Key == "*" ? 1 : 0).ToDictionary(x => x.Key, x => x.Value.Replace("127.0.0.1", _Address.ToString()));
+            _Routes = Routes;
             _MaxSimultaneousConnections = MaxSimultaneousConnections;
             ServerThread = new Thread(Listen) { IsBackground = false };
             ServerThread.Start();
             return $"http://{_Address}:{_Port}/";
         }
 
-        /// <summary>
-        /// Starts server on localhost then returns server's address.
-        /// </summary>
-        /// <param name="Port">Port</param>
-        /// <param name="Routes">Routes dictionary</param>
-        /// <returns></returns>
-        public string Start(int Port, Dictionary<string, string> Routes, int MaxSimultaneousConnections = 20)
-        {
-            _Port = Port;
-            _Address = IPAddress.Parse(GetLocalIP());
-            _Routes = Routes.OrderBy(r => r.Key == "*" ? 1 : 0).ToDictionary(x => x.Key, x => x.Value.Replace("127.0.0.1", _Address.ToString()));
-            _MaxSimultaneousConnections = MaxSimultaneousConnections;
-            ServerThread = new Thread(Listen) { IsBackground = false };
-            ServerThread.Start();
-            return $"http://{_Address}:{_Port}/";
-        }
-
-        /// <summary>
-        /// Starts server on localhost:1999 then returns server's address.
-        /// </summary>
-        /// <param name="Routes">Routes dictionary</param>
-        /// <returns></returns>
-        public string Start(Dictionary<string, string> Routes, int MaxSimultaneousConnections = 20)
-        {
-            _Address = IPAddress.Parse(GetLocalIP());
-            _Routes = Routes.OrderBy(r => r.Key == "*" ? 1 : 0).ToDictionary(x => x.Key, x => x.Value.Replace("127.0.0.1", _Address.ToString()));
-            _MaxSimultaneousConnections = MaxSimultaneousConnections;
-            ServerThread = new Thread(Listen) { IsBackground = false };
-            ServerThread.Start();
-            return $"http://{_Address}:{_Port}/";
-        }
-
-        /// <summary>
-        /// Stops server.
-        /// </summary>
         public void Stop()
         {
             ServerThread.Abort();
@@ -91,170 +41,36 @@ namespace StyptoSlaveBot
         {
             try
             {
-                string Address = $"http://{_Address}:{_Port}/";
-                AllowListener(Address);
-                Listener = new HttpListener();
-                HttpListenerTimeoutManager manager;
-                manager = Listener.TimeoutManager;
-                manager.IdleConnection = TimeSpan.FromMinutes(5);
-                manager.HeaderWait = TimeSpan.FromMinutes(5);
-                manager.EntityBody = TimeSpan.FromMilliseconds(Timeout.Infinite);
-                manager.DrainEntityBody = TimeSpan.FromMilliseconds(Timeout.Infinite);
-                manager.MinSendBytesPerSecond = 0;
-                Listener.Prefixes.Add(Address);
-
+                Listener = new TcpListener(_Address, _Port);
                 Listener.Start();
-                PrintLine($"INFO: Server running on {Address}");
+                Console.WriteLine($"INFO: Server running on {_Address}:{_Port}");
             }
             catch (Exception ex)
             {
-                PrintLine($"ERR: Server failed to start.\nCause: {ex.Message}\nStackTrace:{ex.StackTrace}");
+                Console.WriteLine($"ERR: Server failed to start.\nCause: {ex.Message}\nStackTrace:{ex.StackTrace}");
+                return;
             }
 
             while (Listener != null)
             {
                 try
                 {
-                    //sem.WaitOne();
-                    HttpListenerContext context = Listener.GetContext();
-                    new Thread(() => Process(context)) { IsBackground = true }.Start();
+                    sem.WaitOne();
+                    TcpClient client = Listener.AcceptTcpClient();
+                    new Thread(() => Process(client)) { IsBackground = true }.Start();
                 }
                 catch (Exception ex)
                 {
-                    PrintLine($"ERR: {ex.Message}");
+                    Console.WriteLine($"ERR: {ex.Message}");
                 }
             }
         }
-        #endregion
-        #region Server Misc.
 
-        private void PrintLine(string String)
-        {
-            Console.WriteLine(Tag(String));
-        }
-
-        private string Tag(string Text)
-        {
-            return "[" + DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "] " + Text;
-        }
-
-        private string GetLocalIP()
-        {
-            using (System.Net.Sockets.Socket Socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, 0))
-            {
-                Socket.BeginConnect("8.8.8.8", 65530, null, null).AsyncWaitHandle.WaitOne(500, true);
-                return (Socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
-            }
-        }
-
-        public void AllowListener(string URL)
+        private async void Process(TcpClient client)
         {
             try
             {
-                string command = $"http add urlacl url={new Uri(URL).AbsoluteUri} user=Everyone";
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("netsh", command) { WindowStyle = ProcessWindowStyle.Hidden, CreateNoWindow = true, Verb = "runas" });
-            }
-            catch (Exception ex) {  }
-        }
-
-        public void Respond(string Response, HttpListenerContext Context)
-        {
-            try
-            {
-                Stream Input = StringToStream(Response);
-                Context.Response.ContentType = "application/json";
-                Context.Response.ContentLength64 = Input.Length;
-                byte[] buffer = new byte[1024 * 16];
-                int nbytes;
-                while ((nbytes = Input.Read(buffer, 0, buffer.Length)) > 0)
-                    Context.Response.OutputStream.Write(buffer, 0, nbytes);
-                Input.Close();
-                Context.Response.StatusCode = (int)HttpStatusCode.OK;
-            }
-            catch
-            {
-                Context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            }
-            Context.Response.OutputStream.Flush();
-        }
-
-        public void Respond(string Response, string ContentType, HttpListenerContext Context)
-        {
-            try
-            {
-                Stream Input = StringToStream(Response);
-                Context.Response.ContentType = ContentType;
-                Context.Response.ContentLength64 = Input.Length;
-                byte[] buffer = new byte[1024 * 16];
-                int nbytes;
-                while ((nbytes = Input.Read(buffer, 0, buffer.Length)) > 0)
-                    Context.Response.OutputStream.Write(buffer, 0, nbytes);
-                Input.Close();
-                Context.Response.StatusCode = (int)HttpStatusCode.OK;
-            }
-            catch
-            {
-                Context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            }
-            Context.Response.OutputStream.Flush();
-        }
-
-        public void Respond(Stream Response, string ContentType, HttpListenerContext Context)
-        {
-            try
-            {
-                Response.Position = 0;
-                Context.Response.ContentType = ContentType;
-                byte[] buffer = new byte[1024 * 16];
-                int nbytes;
-                while ((nbytes = Response.Read(buffer, 0, buffer.Length)) > 0)
-                    Context.Response.OutputStream.Write(buffer, 0, nbytes);
-                Response.Close();
-                Context.Response.StatusCode = (int)HttpStatusCode.OK;
-            }
-            catch
-            {
-                Context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            }
-            Context.Response.OutputStream.Flush();
-        }
-
-        public void Respond(FileStream Response, string ContentType, HttpListenerContext Context)
-        {
-            try
-            {
-                Response.Position = 0;
-                Context.Response.ContentType = ContentType;
-                byte[] buffer = new byte[1024 * 16];
-                int nbytes;
-                while ((nbytes = Response.Read(buffer, 0, buffer.Length)) > 0)
-                    Context.Response.OutputStream.Write(buffer, 0, nbytes);
-                Response.Close();
-                Context.Response.StatusCode = (int)HttpStatusCode.OK;
-            }
-            catch
-            {
-                Context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            }
-            Context.Response.OutputStream.Flush();
-        }
-
-        private Stream StringToStream(string s)
-        {
-            var stream = new MemoryStream();
-            var writer = new StreamWriter(stream);
-            writer.Write(s);
-            writer.Flush();
-            stream.Position = 0;
-            return stream;
-        }
-        #endregion
-        #region Server Main
-        private void Process(HttpListenerContext context)
-        {
-            try
-            {
-                string host = context.Request.Url.Host;
+                string host = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
                 string target = null;
 
                 foreach (var route in _Routes)
@@ -268,24 +84,17 @@ namespace StyptoSlaveBot
 
                 if (target != null)
                 {
-                    ForwardRequest(context, target).Wait();
+                    await ForwardTcpConnection(client, target);
                 }
                 else
                 {
-                    context.Response.StatusDescription = "Endpoint not found";
-                    context.Response.StatusCode = (int)HttpStatusCode.NotFound;
-                    context.Response.OutputStream.Flush();
+                    client.Close();
                 }
             }
             catch (Exception ex)
             {
-                context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                context.Response.StatusDescription = ex.Message;
-                context.Response.OutputStream.Flush();
-            }
-            finally
-            {
-                context.Response.OutputStream.Close();
+                Console.WriteLine($"ERR: {ex.Message}");
+                client.Close();
             }
         }
 
@@ -296,7 +105,6 @@ namespace StyptoSlaveBot
 
             var hostParts = host.Split('.');
             var patternParts = pattern.Split('.');
-
 
             if (hostParts.Length != patternParts.Length)
             {
@@ -314,269 +122,25 @@ namespace StyptoSlaveBot
             return true;
         }
 
-        private async Task ForwardRequest(HttpListenerContext context, string target)
+        private async Task ForwardTcpConnection(TcpClient client, string target)
         {
-            var tempUri = new UriBuilder(target);
-            var targetUri = new UriBuilder(context.Request.Url) { Host = tempUri.Host, Port = tempUri.Port }.Uri;
-
-            var client = new RestClient(targetUri);
-
-            // Determine the appropriate method
-            var method = new HttpMethod(context.Request.HttpMethod);
-            if (!Enum.TryParse(method.Method, true, out Method restRequestMethod))
+            var targetUri = new Uri(target);
+            using (var targetClient = new TcpClient())
             {
-                restRequestMethod = Method.GET; // Default to GET if parsing fails
-            }
-
-            var request = new RestRequest(restRequestMethod);
-
-            // Copy headers from the original request
-            foreach (string headerKey in context.Request.Headers)
-            {
-                if (headerKey == "Host")
+                await targetClient.ConnectAsync(targetUri.Host, targetUri.Port);
+                using (var clientStream = client.GetStream())
+                using (var targetStream = targetClient.GetStream())
                 {
-                    request.AddHeader(headerKey, targetUri.Host);
-                    continue;
-                }
-                if (headerKey == "Referer")
-                {
-                    request.AddHeader(headerKey, targetUri.ToString());
-                    continue;
-                }
-                if (headerKey == "Origin")
-                {
-                    request.AddHeader(headerKey, $"{targetUri.Scheme}://{targetUri.Host}");
-                    continue;
-                }
-                request.AddHeader(headerKey, context.Request.Headers[headerKey]);
-            }
+                    Console.WriteLine($"Forwarding connection: [{client.Client.RemoteEndPoint}] -> [{targetUri}]");
 
-            // Copy cookies from the original request
-            foreach (Cookie cookie in context.Request.Cookies)
-            {
-                request.AddCookie(cookie.Name, cookie.Value);
-            }
+                    var clientToTarget = clientStream.CopyToAsync(targetStream);
+                    var targetToClient = targetStream.CopyToAsync(clientStream);
 
-            // Add body if applicable
-            if (method == HttpMethod.Post || method == HttpMethod.Put)
-            {
-                using (var reader = new StreamReader(context.Request.InputStream))
-                {
-                    var body = await reader.ReadToEndAsync();
-                    string contentType = context.Request.ContentType ?? "application/json"; // Fallback to "application/json" if ContentType is null
-                    request.AddParameter(contentType, body, ParameterType.RequestBody);
+                    await Task.WhenAny(clientToTarget, targetToClient);
                 }
             }
-
-            // Execute the request
-            var response = await client.ExecuteAsync(request);
-
-            // Relay response back to original client
-            if (Enum.IsDefined(typeof(HttpStatusCode), response.StatusCode))
-            {
-                context.Response.StatusCode = (int)response.StatusCode;
-            }
-            else
-            {
-                // Handle the case where the status code is not valid
-                context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            }
-
-            // Copy response headers
-            foreach (var header in response.Headers)
-            {
-                if (!WebHeaderCollection.IsRestricted(header.Name))
-                {
-                    context.Response.Headers[header.Name] = header.Value.ToString().Replace(context.Request.Url.Host, target);
-                }
-            }
-
-            // Copy response cookies
-            foreach (var cookie in response.Cookies)
-            {
-                context.Response.SetCookie(new Cookie(cookie.Name, cookie.Value.Replace(context.Request.Url.Host, target), cookie.Path, cookie.Domain.Replace(context.Request.Url.Host, target)));
-            }
-
-            using (var writer = new StreamWriter(context.Response.OutputStream))
-            {
-                await writer.WriteAsync(response.Content.Replace(context.Request.Url.Host, target));
-            }
-            Console.WriteLine($"Forwarded: [{context.Request.Url}] -> [{targetUri}]");
-        }
-
-        public string ReplaceHostWithTarget(string data, string Host, string Target)
-        {
-            return data.Replace(Host, Target);
-        }
-
-        //private async Task ForwardRequest(HttpListenerContext context, string target)
-        //{
-        //    var tempUri = new UriBuilder(target);
-        //    var targetUri = new UriBuilder(context.Request.Url) { Host = tempUri.Host, Port = tempUri.Port }.Uri;
-
-        //    var client = new RestClient(targetUri);
-
-        //    // Determine the appropriate method
-        //    var method = new HttpMethod(context.Request.HttpMethod);
-        //    //var restRequestMethod = Method.GET; // Default to GET
-        //    Enum.TryParse(method.Method, true, out Method restRequestMethod);
-
-        //    //switch (method.Method)
-        //    //{
-        //    //    case "POST":
-        //    //        restRequestMethod = Method.POST;
-        //    //        break;
-        //    //    case "PUT":
-        //    //        restRequestMethod = Method.PUT;
-        //    //        break;
-        //    //    case "DELETE":
-        //    //        restRequestMethod = Method.DELETE;
-        //    //        break;
-        //    //    case "DELETE":
-        //    //        restRequestMethod = Method.PATCH;
-        //    //        break;
-        //    //}
-
-        //    var request = new RestRequest(restRequestMethod);
-
-        //    //Copy headers from the original request
-        //    foreach (string headerKey in context.Request.Headers)
-        //    {
-        //        if (headerKey == "Host")
-        //        {
-        //            request.AddHeader(headerKey, targetUri.Host);
-        //            continue;
-        //        }
-        //        if (headerKey == "Referer")
-        //        {
-        //            request.AddHeader(headerKey, targetUri.ToString());
-        //            continue;
-        //        }
-        //        if (headerKey == "Origin")
-        //        {
-        //            request.AddHeader(headerKey, $"{targetUri.Scheme}://{targetUri.Host}");
-        //            continue;
-        //        }
-        //        request.AddHeader(headerKey, context.Request.Headers[headerKey]);
-        //    }
-
-        //    foreach (Cookie cookie in context.Response.Cookies)
-        //    {
-        //        request.AddCookie(cookie.Name, cookie.Value);
-        //    }
-
-        //    // Add body if applicable
-        //    if (method == HttpMethod.Post || method == HttpMethod.Put)
-        //    {
-        //        using (var reader = new StreamReader(context.Request.InputStream))
-        //        {
-        //            var body = await reader.ReadToEndAsync();
-        //            string contentType = context.Request.ContentType ?? "application/json"; // Fallback to "application/json" if ContentType is null
-        //            request.AddParameter(contentType, body, ParameterType.RequestBody);
-        //        }
-        //    }
-
-        //    // Execute the request
-        //    var response = await client.ExecuteAsync(request);
-
-        //    // Relay response back to original client
-        //    if (Enum.IsDefined(typeof(HttpStatusCode), response.StatusCode))
-        //    {
-        //        context.Response.StatusCode = (int)response.StatusCode;
-        //    }
-        //    else
-        //    {
-        //        // Handle the case where the status code is not valid
-        //        // You might set a default status code or handle this as an error
-        //        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-        //    }
-        //    foreach (var header in response.Headers)
-        //    {
-        //        if (!WebHeaderCollection.IsRestricted(header.Name))
-        //            context.Response.Headers[header.Name] = header.Value.ToString();
-        //    }
-
-        //    foreach (var cookie in response.Cookies)
-        //    {
-        //        context.Response.SetCookie(new Cookie(cookie.Name, cookie.Value));
-        //    }
-
-        //    var xxx = response.Cookies.First();
-
-        //    using (var writer = new StreamWriter(context.Response.OutputStream))
-        //    {
-        //        await writer.WriteAsync(response.Content);
-        //    }
-        //    PrintLine($"Forwarded: [{context.Request.Url}] -> [{targetUri}]");
-        //}
-
-
-
-        private async Task ForwardRequestHttpClient(HttpListenerContext context, string target)
-        {
-            using (var client = new HttpClient())
-            {
-                var currentPath = new UriBuilder(context.Request.Url).Path;
-                var targetUri = new UriBuilder(target + currentPath).Uri;
-                var requestMessage = new HttpRequestMessage
-                {
-                    RequestUri = targetUri,
-                    Method = new HttpMethod(context.Request.HttpMethod)
-                };
-
-                if (context.Request.HttpMethod == "POST" || context.Request.HttpMethod == "PUT" || context.Request.HttpMethod == "DELETE" || context.Request.HttpMethod == "PATCH")
-                    requestMessage.Content = new StreamContent(context.Request.InputStream);
-
-                foreach (string headerKey in context.Request.Headers)
-                {
-                    requestMessage.Headers.TryAddWithoutValidation(headerKey, context.Request.Headers[headerKey]);
-                }
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-                ServicePointManager.ServerCertificateValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
-                var responseMessage = await client.SendAsync(requestMessage);
-                context.Response.StatusCode = (int)responseMessage.StatusCode;
-                foreach (var header in responseMessage.Headers)
-                {
-                    if (!WebHeaderCollection.IsRestricted(header.Key))
-                        context.Response.Headers[header.Key] = string.Join(",", header.Value);
-                }
-
-                using (var responseStream = await responseMessage.Content.ReadAsStreamAsync())
-                {
-                    await responseStream.CopyToAsync(context.Response.OutputStream);
-                }
-            }
-        }
-
-        public static List<Cookie> ExtractCookies(CookieContainer container)
-        {
-            var cookies = new List<Cookie>();
-
-            var table = (Hashtable)container.GetType().InvokeMember("m_domainTable",
-                BindingFlags.NonPublic |
-                BindingFlags.GetField |
-                BindingFlags.Instance,
-                null,
-                container,
-                null);
-
-            foreach (string key in table.Keys)
-            {
-                var item = table[key];
-                var items = (ICollection)item.GetType().GetProperty("Values").GetGetMethod().Invoke(item, null);
-                foreach (CookieCollection cc in items)
-                {
-                    foreach (Cookie cookie in cc)
-                    {
-                        cookies.Add(cookie);
-                    }
-                }
-            }
-
-            return cookies;
         }
         #endregion
         #endregion
-
     }
 }
