@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -24,7 +25,7 @@ namespace StyptoSlaveBot
         {
             _Port = Port;
             _Address = Address;
-            _Routes = Routes;
+            _Routes = Routes.OrderBy(r => r.Key == "*" ? 1 : 0).ToDictionary(x => x.Key, x => x.Value.Replace("127.0.0.1", _Address.ToString()));
             _MaxSimultaneousConnections = MaxSimultaneousConnections;
             ServerThread = new Thread(Listen) { IsBackground = false };
             ServerThread.Start();
