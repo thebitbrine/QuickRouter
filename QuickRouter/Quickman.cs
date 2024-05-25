@@ -21,10 +21,16 @@ namespace StyptoSlaveBot
         private static int _MaxSimultaneousConnections = 20;
         private Semaphore sem = new Semaphore(_MaxSimultaneousConnections, _MaxSimultaneousConnections);
 
-        public string Start(IPAddress Address, int Port, Dictionary<string, string> Routes, int MaxSimultaneousConnections = 20)
+        /// <summary>
+        /// Starts server on localhost then returns server's address.
+        /// </summary>
+        /// <param name="Port">Port</param>
+        /// <param name="Routes">Routes dictionary</param>
+        /// <returns></returns>
+        public string Start(int Port, Dictionary<string, string> Routes, int MaxSimultaneousConnections = 20)
         {
             _Port = Port;
-            _Address = Address;
+            _Address = IPAddress.Parse(GetLocalIP());
             _Routes = Routes.OrderBy(r => r.Key == "*" ? 1 : 0).ToDictionary(x => x.Key, x => x.Value.Replace("127.0.0.1", _Address.ToString()));
             _MaxSimultaneousConnections = MaxSimultaneousConnections;
             ServerThread = new Thread(Listen) { IsBackground = false };
