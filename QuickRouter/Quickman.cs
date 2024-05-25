@@ -320,19 +320,24 @@ namespace StyptoSlaveBot
 
             // Determine the appropriate method
             var method = new HttpMethod(context.Request.HttpMethod);
-            var restRequestMethod = Method.GET; // Default to GET
-            switch (method.Method)
-            {
-                case "POST":
-                    restRequestMethod = Method.POST;
-                    break;
-                case "PUT":
-                    restRequestMethod = Method.PUT;
-                    break;
-                case "DELETE":
-                    restRequestMethod = Method.DELETE;
-                    break;
-            }
+            //var restRequestMethod = Method.GET; // Default to GET
+            Enum.TryParse(method.Method, true, out Method restRequestMethod);
+
+            //switch (method.Method)
+            //{
+            //    case "POST":
+            //        restRequestMethod = Method.POST;
+            //        break;
+            //    case "PUT":
+            //        restRequestMethod = Method.PUT;
+            //        break;
+            //    case "DELETE":
+            //        restRequestMethod = Method.DELETE;
+            //        break;
+            //    case "DELETE":
+            //        restRequestMethod = Method.PATCH;
+            //        break;
+            //}
 
             var request = new RestRequest(restRequestMethod);
 
