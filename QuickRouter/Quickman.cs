@@ -1,5 +1,6 @@
 ﻿using RestSharp;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -7,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Runtime.Remoting.Contexts;
 using System.Threading;
 using System.Threading.Tasks;
@@ -311,6 +313,7 @@ namespace StyptoSlaveBot
 
             return true;
         }
+
         private async Task ForwardRequest(HttpListenerContext context, string target)
         {
             var tempUri = new UriBuilder(target);
@@ -320,28 +323,14 @@ namespace StyptoSlaveBot
 
             // Determine the appropriate method
             var method = new HttpMethod(context.Request.HttpMethod);
-            //var restRequestMethod = Method.GET; // Default to GET
-            Enum.TryParse(method.Method, true, out Method restRequestMethod);
-
-            //switch (method.Method)
-            //{
-            //    case "POST":
-            //        restRequestMethod = Method.POST;
-            //        break;
-            //    case "PUT":
-            //        restRequestMethod = Method.PUT;
-            //        break;
-            //    case "DELETE":
-            //        restRequestMethod = Method.DELETE;
-            //        break;
-            //    case "DELETE":
-            //        restRequestMethod = Method.PATCH;
-            //        break;
-            //}
+            if (!Enum.TryParse(method.Method, true, out Method restRequestMethod))
+            {
+                restRequestMethod = Method.GET; // Default to GET if parsing fails
+            }
 
             var request = new RestRequest(restRequestMethod);
 
-            //Copy headers from the original request
+            // Copy headers from the original request
             foreach (string headerKey in context.Request.Headers)
             {
                 if (headerKey == "Host")
@@ -360,6 +349,12 @@ namespace StyptoSlaveBot
                     continue;
                 }
                 request.AddHeader(headerKey, context.Request.Headers[headerKey]);
+            }
+
+            // Copy cookies from the original request
+            foreach (Cookie cookie in context.Request.Cookies)
+            {
+                request.AddCookie(cookie.Name, cookie.Value);
             }
 
             // Add body if applicable
@@ -384,21 +379,139 @@ namespace StyptoSlaveBot
             else
             {
                 // Handle the case where the status code is not valid
-                // You might set a default status code or handle this as an error
                 context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
             }
+
+            // Copy response headers
             foreach (var header in response.Headers)
             {
                 if (!WebHeaderCollection.IsRestricted(header.Name))
-                    context.Response.Headers[header.Name] = header.Value.ToString();
+                {
+                    context.Response.Headers[header.Name] = header.Value.ToString().Replace(context.Request.Url.Host, target);
+                }
+            }
+
+            // Copy response cookies
+            foreach (var cookie in response.Cookies)
+            {
+                context.Response.SetCookie(new Cookie(cookie.Name, cookie.Value.Replace(context.Request.Url.Host, target), cookie.Path, cookie.Domain.Replace(context.Request.Url.Host, target)));
             }
 
             using (var writer = new StreamWriter(context.Response.OutputStream))
             {
-                await writer.WriteAsync(response.Content);
+                await writer.WriteAsync(response.Content.Replace(context.Request.Url.Host, target));
             }
-            PrintLine($"Forwarded: [{context.Request.Url}] -> [{targetUri}]");
+            Console.WriteLine($"Forwarded: [{context.Request.Url}] -> [{targetUri}]");
         }
+
+        public string ReplaceHostWithTarget(string data, string Host, string Target)
+        {
+            return data.Replace(Host, Target);
+        }
+
+        //private async Task ForwardRequest(HttpListenerContext context, string target)
+        //{
+        //    var tempUri = new UriBuilder(target);
+        //    var targetUri = new UriBuilder(context.Request.Url) { Host = tempUri.Host, Port = tempUri.Port }.Uri;
+
+        //    var client = new RestClient(targetUri);
+
+        //    // Determine the appropriate method
+        //    var method = new HttpMethod(context.Request.HttpMethod);
+        //    //var restRequestMethod = Method.GET; // Default to GET
+        //    Enum.TryParse(method.Method, true, out Method restRequestMethod);
+
+        //    //switch (method.Method)
+        //    //{
+        //    //    case "POST":
+        //    //        restRequestMethod = Method.POST;
+        //    //        break;
+        //    //    case "PUT":
+        //    //        restRequestMethod = Method.PUT;
+        //    //        break;
+        //    //    case "DELETE":
+        //    //        restRequestMethod = Method.DELETE;
+        //    //        break;
+        //    //    case "DELETE":
+        //    //        restRequestMethod = Method.PATCH;
+        //    //        break;
+        //    //}
+
+        //    var request = new RestRequest(restRequestMethod);
+
+        //    //Copy headers from the original request
+        //    foreach (string headerKey in context.Request.Headers)
+        //    {
+        //        if (headerKey == "Host")
+        //        {
+        //            request.AddHeader(headerKey, targetUri.Host);
+        //            continue;
+        //        }
+        //        if (headerKey == "Referer")
+        //        {
+        //            request.AddHeader(headerKey, targetUri.ToString());
+        //            continue;
+        //        }
+        //        if (headerKey == "Origin")
+        //        {
+        //            request.AddHeader(headerKey, $"{targetUri.Scheme}://{targetUri.Host}");
+        //            continue;
+        //        }
+        //        request.AddHeader(headerKey, context.Request.Headers[headerKey]);
+        //    }
+
+        //    foreach (Cookie cookie in context.Response.Cookies)
+        //    {
+        //        request.AddCookie(cookie.Name, cookie.Value);
+        //    }
+
+        //    // Add body if applicable
+        //    if (method == HttpMethod.Post || method == HttpMethod.Put)
+        //    {
+        //        using (var reader = new StreamReader(context.Request.InputStream))
+        //        {
+        //            var body = await reader.ReadToEndAsync();
+        //            string contentType = context.Request.ContentType ?? "application/json"; // Fallback to "application/json" if ContentType is null
+        //            request.AddParameter(contentType, body, ParameterType.RequestBody);
+        //        }
+        //    }
+
+        //    // Execute the request
+        //    var response = await client.ExecuteAsync(request);
+
+        //    // Relay response back to original client
+        //    if (Enum.IsDefined(typeof(HttpStatusCode), response.StatusCode))
+        //    {
+        //        context.Response.StatusCode = (int)response.StatusCode;
+        //    }
+        //    else
+        //    {
+        //        // Handle the case where the status code is not valid
+        //        // You might set a default status code or handle this as an error
+        //        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+        //    }
+        //    foreach (var header in response.Headers)
+        //    {
+        //        if (!WebHeaderCollection.IsRestricted(header.Name))
+        //            context.Response.Headers[header.Name] = header.Value.ToString();
+        //    }
+
+        //    foreach (var cookie in response.Cookies)
+        //    {
+        //        context.Response.SetCookie(new Cookie(cookie.Name, cookie.Value));
+        //    }
+
+        //    var xxx = response.Cookies.First();
+
+        //    using (var writer = new StreamWriter(context.Response.OutputStream))
+        //    {
+        //        await writer.WriteAsync(response.Content);
+        //    }
+        //    PrintLine($"Forwarded: [{context.Request.Url}] -> [{targetUri}]");
+        //}
+
+
+
         private async Task ForwardRequestHttpClient(HttpListenerContext context, string target)
         {
             using (var client = new HttpClient())
@@ -433,6 +546,34 @@ namespace StyptoSlaveBot
                     await responseStream.CopyToAsync(context.Response.OutputStream);
                 }
             }
+        }
+
+        public static List<Cookie> ExtractCookies(CookieContainer container)
+        {
+            var cookies = new List<Cookie>();
+
+            var table = (Hashtable)container.GetType().InvokeMember("m_domainTable",
+                BindingFlags.NonPublic |
+                BindingFlags.GetField |
+                BindingFlags.Instance,
+                null,
+                container,
+                null);
+
+            foreach (string key in table.Keys)
+            {
+                var item = table[key];
+                var items = (ICollection)item.GetType().GetProperty("Values").GetGetMethod().Invoke(item, null);
+                foreach (CookieCollection cc in items)
+                {
+                    foreach (Cookie cookie in cc)
+                    {
+                        cookies.Add(cookie);
+                    }
+                }
+            }
+
+            return cookies;
         }
         #endregion
         #endregion
